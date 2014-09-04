@@ -43,6 +43,7 @@ import android.os.HandlerThread;
 import android.os.ParcelFileDescriptor;
 import android.os.Parcelable;
 import android.provider.BaseColumns;
+import android.provider.ContactsContract.Contacts;
 import android.text.Editable;
 import android.text.Html;
 import android.text.SpannableString;
@@ -65,6 +66,7 @@ import android.view.inputmethod.EditorInfo;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageButton;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -114,6 +116,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map.Entry;
 import java.util.Set;
@@ -129,7 +132,11 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
     public static final int REPLY = 0;
     public static final int REPLY_ALL = 1;
     public static final int FORWARD = 2;
-    public static final int EDIT_DRAFT = 3;
+    public static final int FORWARD_DROP_UNLOADED_ATTS = 3;
+    public static final int EDIT_DRAFT = 4;
+
+    // Match MultiPickContactActivity
+    public static final String IS_SELECT_ALL_DISALLOWED = "is_select_all_disallowed";
 
     // Integer extra holding one of the above compose action
     protected static final String EXTRA_ACTION = "action";
@@ -212,6 +219,14 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
     // Request numbers for activities we start
     private static final int RESULT_PICK_ATTACHMENT = 1;
     private static final int RESULT_CREATE_ACCOUNT = 2;
+    private static final int RESULT_PICK_CONTACT_TO = 3;
+    private static final int RESULT_PICK_CONTACT_CC = 4;
+    private static final int RESULT_PICK_CONTACT_BCC = 5;
+
+    // The action to pick recipients
+    private static final String ACTION_MULTI_PICK_EMAIL =
+            "com.android.contacts.action.MULTI_PICK_EMAIL";
+
     // TODO(mindyp) set mime-type for auto send?
     public static final String AUTO_SEND_ACTION = "com.android.mail.action.AUTO_SEND";
 
@@ -227,6 +242,7 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
     private static final String TAG_WAIT = "wait-fragment";
     private static final String MIME_TYPE_PHOTO = "image/*";
     private static final String MIME_TYPE_VIDEO = "video/*";
+    private static final String MIME_TYPE_ALL = "*/*";
 
     private static final String KEY_INNER_SAVED_STATE = "compose_state";
 
@@ -237,6 +253,9 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
     private RecipientEditTextView mTo;
     private RecipientEditTextView mCc;
     private RecipientEditTextView mBcc;
+    private ImageButton mToPickRecipients;
+    private ImageButton mCcPickRecipients;
+    private ImageButton mBccPickRecipients;
     private Button mCcBccButton;
     private CcBccView mCcBccView;
     private AttachmentsView mAttachmentsView;
@@ -256,6 +275,7 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
     private View mFromSpinnerWrapper;
     @VisibleForTesting
     protected FromAddressSpinner mFromSpinner;
+    private boolean mPickingRecipients;
     private boolean mAddingAttachment;
     private boolean mAttachmentsChanged;
     private boolean mTextChanged;
@@ -389,6 +409,14 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
      */
     public static void forward(Context launcher, Account account, Message message) {
         launch(launcher, account, message, FORWARD, null, null, null, null, null /* extraValues */);
+    }
+
+    /**
+     * Can be called from a non-UI thread.
+     */
+    public static void forwardDropUnloadedAtts(Context launcher, Account account, Message message) {
+        launch(launcher, account, message, FORWARD_DROP_UNLOADED_ATTS,
+                null, null, null, null, null /* extraValues */);
     }
 
     public static void reportRenderingFeedback(Context launcher, Account account, Message message,
@@ -560,7 +588,10 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
                 getLoaderManager().initLoader(REFERENCE_MESSAGE_LOADER, null, this);
                 return;
             }
-        } else if ((action == REPLY || action == REPLY_ALL || action == FORWARD)) {
+        } else if ((action == REPLY
+                || action == REPLY_ALL
+                || action == FORWARD
+                || action == FORWARD_DROP_UNLOADED_ATTS)) {
             if (mRefMessage != null) {
                 initFromRefMessage(action);
                 mShowQuotedText = true;
@@ -571,7 +602,8 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
             }
         }
 
-        mComposeMode = action;
+        // As the action maybe drop unloaded attachments, so adjust the compose mode.
+        mComposeMode = action == FORWARD_DROP_UNLOADED_ATTS ? FORWARD : action;
         finishSetup(action, intent, savedState);
     }
 
@@ -674,6 +706,7 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
         }
 
         initChangeListeners();
+        updateHideOrShowPickRecipients();
         updateHideOrShowCcBcc();
         updateHideOrShowQuotedText(mShowQuotedText);
 
@@ -711,6 +744,7 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
         switch (action) {
             case FORWARD:
             case COMPOSE:
+            case FORWARD_DROP_UNLOADED_ATTS:
                 if (TextUtils.isEmpty(mTo.getText())) {
                     mTo.requestFocus();
                     break;
@@ -798,6 +832,15 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
                 getLoaderManager().initLoader(LOADER_ACCOUNT_CURSOR, null, this);
                 showWaitFragment(null);
             }
+        } else if (result == RESULT_OK && request == RESULT_PICK_CONTACT_TO) {
+            addAddressesToList(data, mTo);
+            mPickingRecipients = false;
+        } else if (result == RESULT_OK && request == RESULT_PICK_CONTACT_CC) {
+            addAddressesToList(data, mCc);
+            mPickingRecipients = false;
+        } else if (result == RESULT_OK && request == RESULT_PICK_CONTACT_BCC) {
+            addAddressesToList(data, mBcc);
+            mPickingRecipients = false;
         }
     }
 
@@ -1137,6 +1180,12 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
         mCc.setTokenizer(new Rfc822Tokenizer());
         mBcc = (RecipientEditTextView) findViewById(R.id.bcc);
         mBcc.setTokenizer(new Rfc822Tokenizer());
+        mToPickRecipients = (ImageButton) findViewById(R.id.to_pick_recipients);
+        mToPickRecipients.setOnClickListener(this);
+        mCcPickRecipients = (ImageButton) findViewById(R.id.cc_pick_recipients);
+        mCcPickRecipients.setOnClickListener(this);
+        mBccPickRecipients = (ImageButton) findViewById(R.id.bcc_pick_recipients);
+        mBccPickRecipients.setOnClickListener(this);
         // TODO: add special chips text change watchers before adding
         // this as a text changed watcher to the to, cc, bcc fields.
         mSubject = (TextView) findViewById(R.id.subject);
@@ -1227,6 +1276,7 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
                     actionBar.setSelectedNavigationItem(1);
                     break;
                 case ComposeActivity.FORWARD:
+                case ComposeActivity.FORWARD_DROP_UNLOADED_ATTS:
                     actionBar.setSelectedNavigationItem(2);
                     break;
             }
@@ -1269,13 +1319,15 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
     private void setFieldsFromRefMessage(int action) {
         setSubject(mRefMessage, action);
         // Setup recipients
-        if (action == FORWARD) {
+        if (action == FORWARD || action == FORWARD_DROP_UNLOADED_ATTS) {
             mForward = true;
         }
         initRecipientsFromRefMessage(mRefMessage, action);
         initQuotedTextFromRefMessage(mRefMessage, action);
-        if (action == ComposeActivity.FORWARD || mAttachmentsChanged) {
-            initAttachments(mRefMessage);
+        if (action == ComposeActivity.FORWARD
+                || action == ComposeActivity.FORWARD_DROP_UNLOADED_ATTS
+                || mAttachmentsChanged) {
+            initAttachments(mRefMessage, action == ComposeActivity.FORWARD_DROP_UNLOADED_ATTS);
         }
     }
 
@@ -1515,15 +1567,18 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
     }
 
     @VisibleForTesting
-    protected void initAttachments(Message refMessage) {
-        addAttachments(refMessage.getAttachments());
+    protected void initAttachments(Message refMessage, boolean dropUnloaded) {
+        addAttachments(refMessage.getAttachments(), dropUnloaded);
     }
 
-    public long addAttachments(List<Attachment> attachments) {
+    public long addAttachments(List<Attachment> attachments, boolean dropUnloaded) {
         long size = 0;
         AttachmentFailureException error = null;
         for (Attachment a : attachments) {
             try {
+                if (dropUnloaded && !a.isDownloadFinished()) {
+                    continue;
+                }
                 size += mAttachmentsView.addAttachment(mAccount, a);
             } catch (AttachmentFailureException e) {
                 error = e;
@@ -1609,7 +1664,7 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
                                     (R.string.generic_attachment_problem, maxSize));
                         }
                     }
-                    totalSize += addAttachments(attachments);
+                    totalSize += addAttachments(attachments, false);
                 } else {
                     final Uri uri = (Uri) extras.getParcelable(Intent.EXTRA_STREAM);
                     long size = 0;
@@ -1644,8 +1699,25 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
     }
 
     private void initQuotedTextFromRefMessage(Message refMessage, int action) {
-        if (mRefMessage != null && (action == REPLY || action == REPLY_ALL || action == FORWARD)) {
-            mQuotedTextView.setQuotedText(action, refMessage, action != FORWARD);
+        if (mRefMessage != null
+                && (action == REPLY
+                        || action == REPLY_ALL
+                        || action == FORWARD
+                        || action == FORWARD_DROP_UNLOADED_ATTS)) {
+            mQuotedTextView.setQuotedText(action, refMessage,
+                    action != FORWARD || action != FORWARD_DROP_UNLOADED_ATTS);
+        }
+    }
+
+    private void updateHideOrShowPickRecipients() {
+        if (mAccount.settings.selectRecipients) {
+            mToPickRecipients.setVisibility(View.VISIBLE);
+            mCcPickRecipients.setVisibility(View.VISIBLE);
+            mBccPickRecipients.setVisibility(View.VISIBLE);
+        } else {
+            mToPickRecipients.setVisibility(View.GONE);
+            mCcPickRecipients.setVisibility(View.GONE);
+            mBccPickRecipients.setVisibility(View.GONE);
         }
     }
 
@@ -1712,7 +1784,8 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
 
     void initRecipientsFromRefMessage(Message refMessage, int action) {
         // Don't populate the address if this is a forward.
-        if (action == ComposeActivity.FORWARD) {
+        if (action == ComposeActivity.FORWARD
+                || action == ComposeActivity.FORWARD_DROP_UNLOADED_ATTS) {
             return;
         }
         initReplyRecipients(refMessage, action);
@@ -1811,6 +1884,25 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
         return tokenized;
     }
 
+    void addAddressesToList(Intent data, RecipientEditTextView list) {
+        if (data == null && list == null) return;
+
+        Bundle choiceSet = data.getExtras().getBundle("result");
+        Set<String> set = choiceSet.keySet();
+        Iterator<String> i = set.iterator();
+        while (i.hasNext()) {
+            String[] array = choiceSet.getStringArray(i.next());
+            // For this array, it store the contact's name by the index 0
+            // and store the contact's address by the index 1.
+            // Format the address as: <address>
+            addAddressToList("<" + array[1] + ">", list);
+        }
+
+        // Make the list will be displayed as parsed.
+        list.requestFocus();         // request the focus
+        focusBody();                 // focus to body view
+    }
+
     @VisibleForTesting
     void addAddressesToList(Collection<String> addresses, RecipientEditTextView list) {
         for (String address : addresses) {
@@ -1893,7 +1985,8 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
         String prefix;
         if (action == ComposeActivity.COMPOSE) {
             prefix = "";
-        } else if (action == ComposeActivity.FORWARD) {
+        } else if (action == ComposeActivity.FORWARD
+                || action == ComposeActivity.FORWARD_DROP_UNLOADED_ATTS) {
             prefix = res.getString(R.string.forward_subject_label);
         } else {
             prefix = res.getString(R.string.reply_subject_label);
@@ -1939,12 +2032,25 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
     @Override
     public void onClick(View v) {
         final int id = v.getId();
-        if (id == R.id.add_cc_bcc) {
+        if (id == R.id.to_pick_recipients) {
+            pickRecipient(RESULT_PICK_CONTACT_TO);
+        } else if (id == R.id.cc_pick_recipients) {
+            pickRecipient(RESULT_PICK_CONTACT_CC);
+        } else if (id == R.id.bcc_pick_recipients) {
+            pickRecipient(RESULT_PICK_CONTACT_BCC);
+        } else if (id == R.id.add_cc_bcc) {
             // Verify that cc/ bcc aren't showing.
             // Animate in cc/bcc.
             showCcBccViews();
         } else if (id == R.id.add_photo_attachment) {
-            doAttach(MIME_TYPE_PHOTO);
+            // On the 600dp, it will only display one attach button as add_photo_attachment.
+            // So if the user enable the "Add any file as attachment", we will let the user
+            // could select any file as attachment.
+            if (mAccount.settings.addAttachment) {
+                doAttach(MIME_TYPE_ALL);
+            } else {
+                doAttach(MIME_TYPE_PHOTO);
+            }
         } else if (id == R.id.add_video_attachment) {
             doAttach(MIME_TYPE_VIDEO);
         }
@@ -2013,6 +2119,12 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
                 ccBcc.setVisible(false);
             }
         }
+
+        MenuItem addFileAttachment = menu.findItem(R.id.add_file_attachment);
+        if (addFileAttachment != null) {
+            addFileAttachment.setVisible(mAccount.settings.addAttachment);
+        }
+
         return true;
     }
 
@@ -2023,7 +2135,9 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
         Analytics.getInstance().sendMenuItemEvent(Analytics.EVENT_CATEGORY_MENU_ITEM, id, null, 0);
 
         boolean handled = true;
-        if (id == R.id.add_photo_attachment) {
+        if (id == R.id.add_file_attachment) {
+            doAttach(MIME_TYPE_ALL);
+        } else if (id == R.id.add_photo_attachment) {
             doAttach(MIME_TYPE_PHOTO);
         } else if (id == R.id.add_video_attachment) {
             doAttach(MIME_TYPE_VIDEO);
@@ -2940,10 +3054,27 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
         Intent i = new Intent(Intent.ACTION_GET_CONTENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
         i.addFlags(Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET);
+        i.putExtra("exit_after_record", true); // For Sound Recorder
         i.setType(type);
         mAddingAttachment = true;
         startActivityForResult(Intent.createChooser(i, getText(R.string.select_attachment_type)),
                 RESULT_PICK_ATTACHMENT);
+    }
+
+    private void pickRecipient(int requestCode) {
+        mPickingRecipients = true;
+
+        // Start the activity to pick the recipient.
+        Intent intent = new Intent(ACTION_MULTI_PICK_EMAIL);
+        intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        intent.setType(Contacts.CONTENT_TYPE);
+        intent.putExtra(IS_SELECT_ALL_DISALLOWED, true);
+        startActivityForResult(intent, requestCode);
+
+        // Set the focus to body view.
+        // And it will make the recipient view to parse the address.
+        focusBody();
     }
 
     private void showCcBccViews() {
@@ -2967,6 +3098,9 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
                 break;
             case FORWARD:
                 msgType = "forward";
+                break;
+            case FORWARD_DROP_UNLOADED_ATTS:
+                msgType = "forward_drop_unloaded_atts";
                 break;
             default:
                 msgType = "unknown";
@@ -3247,7 +3381,7 @@ public class ComposeActivity extends Activity implements OnClickListener, OnNavi
         }
 
         if (shouldSave()) {
-            doSave(!mAddingAttachment /* show toast */);
+            doSave(!mAddingAttachment && !mPickingRecipients /* show toast */);
         }
     }
 

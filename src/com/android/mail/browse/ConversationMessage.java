@@ -72,7 +72,7 @@ public final class ConversationMessage extends Message {
      *
      */
     public int getStateHashCode() {
-        return Objects.hashCode(uri, loaded, read, starred, getAttachmentsStateHashCode());
+        return Objects.hashCode(uri, read, starred, getAttachmentsStateHashCode());
     }
 
     private int getAttachmentsStateHashCode() {
@@ -93,6 +93,13 @@ public final class ConversationMessage extends Message {
         final ConversationUpdater listController = mController.getListController();
         if (listController != null) {
             listController.starMessage(this, newStarred);
+        }
+    }
+
+    public void loadMore() {
+        final ConversationUpdater listController = mController.getListController();
+        if (listController != null) {
+            listController.loadMore(this);
         }
     }
 
