@@ -24,9 +24,9 @@ import com.google.common.base.Objects;
 public class MessageInfo implements Parcelable {
     public static final String SENDER_LIST_TOKEN_ELIDED = " .. ";
 
-    public boolean loaded;
     public boolean read;
     public boolean starred;
+    public boolean hasAttachments;
     public String sender;
     public String senderEmail;
     public int priority;
@@ -34,18 +34,18 @@ public class MessageInfo implements Parcelable {
     public MessageInfo() {
     }
 
-    public MessageInfo(boolean isRead, boolean isStarred, String senderString, int p,
-            String email, boolean loaded) {
-        set(isRead, isStarred, senderString, p, email, loaded);
+    public MessageInfo(boolean isRead, boolean isStarred, boolean has, String senderString, int p,
+            String email) {
+        set(isRead, isStarred, has, senderString, p, email);
     }
 
     private MessageInfo(Parcel in) {
         read = (in.readInt() != 0);
         starred = (in.readInt() != 0);
+        hasAttachments = (in.readInt() != 0);
         sender = in.readString();
         priority = in.readInt();
         senderEmail = in.readString();
-        loaded = (in.readInt() != 0);
     }
 
     @Override
@@ -57,20 +57,20 @@ public class MessageInfo implements Parcelable {
     public void writeToParcel(Parcel dest, int flags) {
         dest.writeInt(read ? 1 : 0);
         dest.writeInt(starred ? 1 : 0);
+        dest.writeInt(hasAttachments ? 1 : 0);
         dest.writeString(sender);
         dest.writeInt(priority);
         dest.writeString(senderEmail);
-        dest.writeInt(loaded ? 1 : 0);
     }
 
-    public void set(boolean isRead, boolean isStarred, String senderString, int p,
-            String email, boolean isLoaded) {
+    public void set(boolean isRead, boolean isStarred, boolean has, String senderString, int p,
+            String email) {
         read = isRead;
         starred = isStarred;
+        hasAttachments = has;
         sender = senderString;
         priority = p;
         senderEmail = email;
-        loaded = isLoaded;
     }
 
     public boolean markRead(boolean isRead) {
@@ -83,7 +83,7 @@ public class MessageInfo implements Parcelable {
 
     @Override
     public int hashCode() {
-        return Objects.hashCode(loaded, read, starred, sender, senderEmail, priority);
+        return Objects.hashCode(read, starred, hasAttachments, sender, senderEmail);
     }
 
     public static final Creator<MessageInfo> CREATOR = new Creator<MessageInfo>() {
@@ -105,14 +105,16 @@ public class MessageInfo implements Parcelable {
         final StringBuilder builder = new StringBuilder();
         builder.append("[MessageInfo: read = ");
         builder.append(read);
+        builder.append(", starred = ");
+        builder.append(starred);
+        builder.append(", hasAttachments = ");
+        builder.append(hasAttachments);
         builder.append(", sender = ");
         builder.append(sender);
         builder.append(", senderEmail = ");
         builder.append(senderEmail);
         builder.append(", priority = ");
         builder.append(priority);
-        builder.append(", loaded = ");
-        builder.append(loaded);
         builder.append("]");
         return builder.toString();
     }

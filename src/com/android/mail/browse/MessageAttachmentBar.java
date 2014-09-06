@@ -20,6 +20,8 @@ package com.android.mail.browse;
 import android.app.AlertDialog;
 import android.app.FragmentManager;
 import android.content.ActivityNotFoundException;
+import android.content.AsyncQueryHandler;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
@@ -59,6 +61,7 @@ public class MessageAttachmentBar extends FrameLayout implements OnClickListener
         OnMenuItemClickListener, AttachmentViewInterface {
 
     private Attachment mAttachment;
+    private ImageView mIcon;
     private TextView mTitle;
     private TextView mSubTitle;
     private String mAttachmentSizeText;
@@ -90,7 +93,6 @@ public class MessageAttachmentBar extends FrameLayout implements OnClickListener
         super(context, attrs);
 
         mActionHandler = new AttachmentActionHandler(context, this);
-        mActionHandler.setViewOnFinish(false);
     }
 
     public void initialize(FragmentManager fragmentManager) {
@@ -109,8 +111,6 @@ public class MessageAttachmentBar extends FrameLayout implements OnClickListener
      * cause sub-views to update.
      */
     public void render(Attachment attachment, Uri accountUri, boolean loaderResult) {
-        mActionHandler.setViewOnFinish(false);
-
         // get account uri for potential eml viewer usage
         mAccountUri = accountUri;
 
@@ -128,8 +128,10 @@ public class MessageAttachmentBar extends FrameLayout implements OnClickListener
                 attachment.destination, attachment.downloadedSize, attachment.contentUri,
                 attachment.getContentType(), attachment.flags);
 
-        if ((attachment.flags & Attachment.FLAG_DUMMY_ATTACHMENT) != 0) {
-            mTitle.setText(R.string.load_attachment);
+        if (attachment.isLoadMore()) {
+            mIcon.setImageResource(R.drawable.ic_load_more_holo_light);
+            mTitle.setText(R.string.load_more);
+            mOverflowButton.setVisibility(View.GONE);
         } else if (prevAttachment == null
                 || !TextUtils.equals(attachment.getName(), prevAttachment.getName())) {
             mTitle.setText(attachment.getName());
@@ -150,6 +152,7 @@ public class MessageAttachmentBar extends FrameLayout implements OnClickListener
     protected void onFinishInflate() {
         super.onFinishInflate();
 
+        mIcon = (ImageView) findViewById(R.id.attachment_icon);
         mTitle = (TextView) findViewById(R.id.attachment_title);
         mSubTitle = (TextView) findViewById(R.id.attachment_subtitle);
         mProgress = (ProgressBar) findViewById(R.id.attachment_progress);
@@ -173,13 +176,11 @@ public class MessageAttachmentBar extends FrameLayout implements OnClickListener
     }
 
     private boolean onClick(final int res, final View v) {
-        mActionHandler.setViewOnFinish(true);
         if (res == R.id.preview_attachment) {
             previewAttachment();
         } else if (res == R.id.save_attachment) {
             if (mAttachment.canSave()) {
                 mActionHandler.startDownloadingAttachment(AttachmentDestination.EXTERNAL);
-                mSaveClicked = true;
 
                 Analytics.getInstance().sendEvent(
                         "save_attachment", Utils.normalizeMimeType(mAttachment.getContentType()),
@@ -187,7 +188,7 @@ public class MessageAttachmentBar extends FrameLayout implements OnClickListener
             }
         } else if (res == R.id.download_again) {
             if (mAttachment.isPresentLocally()) {
-                mActionHandler.showDownloadingDialog(false);
+                mActionHandler.showDownloadingDialog();
                 mActionHandler.startRedownloadingAttachment(mAttachment);
 
                 Analytics.getInstance().sendEvent("redownload_attachment",
@@ -228,11 +229,13 @@ public class MessageAttachmentBar extends FrameLayout implements OnClickListener
             final String mime = Utils.normalizeMimeType(mAttachment.getContentType());
             final String action;
 
-            if ((mAttachment.flags & Attachment.FLAG_DUMMY_ATTACHMENT) != 0) {
-                // This is a dummy. We need to download it, but not attempt to open or preview.
-                mActionHandler.showDownloadingDialog(false);
-                mActionHandler.setViewOnFinish(false);
-                mActionHandler.startDownloadingAttachment(AttachmentDestination.CACHE);
+            if (mAttachment.isLoadMore()) {
+                // Changed to use the Message's load more uri to get the entire mail.
+                if (mAttachment.messageLoadMoreUri != null) {
+                    LoadMoreAction loadmore = new LoadMoreAction(getContext().getContentResolver(),
+                            mAttachment.messageLoadMoreUri);
+                    loadmore.sendCommand();
+                }
 
                 action = null;
             }
@@ -296,7 +299,7 @@ public class MessageAttachmentBar extends FrameLayout implements OnClickListener
     }
 
     private boolean shouldShowSave() {
-        return mAttachment.canSave() && !mSaveClicked;
+        return mAttachment.canSave() && !mSaveClicked && !mAttachment.isLoadMore();
     }
 
     private boolean shouldShowDownloadAgain() {
@@ -316,7 +319,6 @@ public class MessageAttachmentBar extends FrameLayout implements OnClickListener
 
     @Override
     public void viewAttachment() {
-System.out.println("JRC::viewAttachment(): " + mAttachment.contentUri);
         if (mAttachment.contentUri == null) {
             LogUtils.e(LOG_TAG, "viewAttachment with null content uri");
             return;
@@ -347,7 +349,6 @@ System.out.println("JRC::viewAttachment(): " + mAttachment.contentUri);
 
     private void previewAttachment() {
         if (mAttachment.canPreview()) {
-System.out.println("JRC::previewAttachment(): " + mAttachment.previewIntentUri);
             final Intent previewIntent =
                     new Intent(Intent.ACTION_VIEW, mAttachment.previewIntentUri);
             getContext().startActivity(previewIntent);
@@ -419,5 +420,18 @@ System.out.println("JRC::previewAttachment(): " + mAttachment.previewIntentUri);
             }
         }
         mSubTitle.setText(sb.toString());
+    }
+
+    private class LoadMoreAction extends AsyncQueryHandler {
+        private final Uri mLoadMoreUri;
+
+        public LoadMoreAction(ContentResolver resolver, Uri loadMoreUri) {
+            super(resolver);
+            mLoadMoreUri = loadMoreUri;
+        }
+
+        public void sendCommand() {
+            startQuery(0, null, mLoadMoreUri, null, null, null, null);
+        }
     }
 }
